@@ -77,7 +77,7 @@ def dmi(df: pd.DataFrame, n: int):
     return plus.to_numpy(), minus.to_numpy(), adx
 
 
-def compute(df: pd.DataFrame, htf: pd.DataFrame, htf_sec: int):
+def compute(df: pd.DataFrame, htf: pd.DataFrame, htf_sec: int, details: dict = None):
     """Return (buy, sell) boolean arrays aligned with df. df/htf need a UTC 'time' column (bar open)."""
     c = df["close"]
     l1, l2, l3, l4 = (adaptive(c, n) for n in (LEN1, LEN2, LEN3, LEN4))
@@ -116,6 +116,13 @@ def compute(df: pd.DataFrame, htf: pd.DataFrame, htf_sec: int):
         if last is None or i - last > COOLDOWN:
             (buy if buy_setup[i] else sell)[i] = True
             last = i
+    if details is not None:
+        details.update(l2=l2.to_numpy(), cross_up=cross_up, cross_dn=cross_dn,
+                       bull_stack=bull_stack, bear_stack=bear_stack,
+                       bull_slope=bull_slope, bear_slope=bear_slope,
+                       plus=plus, minus=minus, adx=adx,
+                       htf_bull=htf_bull, htf_bear=htf_bear,
+                       htf_close=m["close"].to_numpy(), htf_line=m["line"].to_numpy())
     return buy, sell
 
 
@@ -164,10 +171,30 @@ def telegram(text: str) -> None:
 
 
 # ---------------- main loop ----------------
+def print_debug(symbol: str, tf: str, ltf: pd.DataFrame, d: dict, buy, sell, rows: int = 12) -> None:
+    """Prints why each recent candle did or did not produce a signal (shows up in the GitHub run log)."""
+    tf_sec = tf_seconds(tf)
+    n = len(ltf)
+    print(f"--- debug {symbol} {tf}: candle CLOSE time in UTC ---")
+    print("close  | price     | line2     | cross | stack | slope | DI | adx  | htf | htfClose  | htfLine   | signal")
+    for i in range(max(0, n - rows), n):
+        t = ltf["time"].iloc[i] + pd.Timedelta(seconds=tf_sec)
+        cross = "UP" if d["cross_up"][i] else ("DN" if d["cross_dn"][i] else "-")
+        stack = "B" if d["bull_stack"][i] else ("S" if d["bear_stack"][i] else "-")
+        slope = "B" if d["bull_slope"][i] else ("S" if d["bear_slope"][i] else "-")
+        di = "P>M" if d["plus"][i] > d["minus"][i] else "M>P"
+        htf = "B" if d["htf_bull"][i] else ("S" if d["htf_bear"][i] else "-")
+        sig = "BUY" if buy[i] else ("SELL" if sell[i] else "-")
+        print(f"{t:%H:%M}  | {ltf['close'].iloc[i]:<9.1f} | {d['l2'][i]:<9.1f} | {cross:<5} | {stack:<5} | {slope:<5} | {di} | "
+              f"{d['adx'][i]:<4.1f} | {htf:<3} | {d['htf_close'][i]:<9.1f} | {d['htf_line'][i]:<9.1f} | {sig}")
+
+
 def check(args, symbol: str, tf: str, htf_tf: str) -> None:
     state_file = Path(f".state_{symbol.replace('/', '_')}_{tf}.json")
     ltf, htf = fetch(args, symbol, tf), fetch(args, symbol, htf_tf)
-    buy, sell = compute(ltf, htf, tf_seconds(htf_tf))
+    dbg = {}
+    buy, sell = compute(ltf, htf, tf_seconds(htf_tf), dbg)
+    print_debug(symbol, tf, ltf, dbg, buy, sell)
 
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
     sent = set(state.get("sent", []))
