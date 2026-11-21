@@ -1,0 +1,40 @@
+name: four-line-alerts
+
+on:
+  schedule:
+    - cron: "1-59/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: four-line-alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check for signals
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol BTC/USD --tf 5m,15m --htf 15m
+
+      - name: Save alert state
+        run: |
+          git config user.name "alerts-bot"
+          git config user.email "alerts-bot@users.noreply.github.com"
+          git add .state_*.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "update alert state" && git push)
