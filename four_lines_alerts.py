@@ -21,6 +21,7 @@ USE_ADX = True
 TP_PCT = 1.0
 SL_PCT = 1.0
 COOLDOWN = 4
+LOOKBACK = 3  # on every run, also check this many most recent closed candles (catches late runs)
 BARS = 1000  # history to load; the adaptive lines need a few hundred bars to settle
 
 UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -167,23 +168,41 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
     state_file = Path(f".state_{symbol.replace('/', '_')}_{tf}.json")
     ltf, htf = fetch(args, symbol, tf), fetch(args, symbol, htf_tf)
     buy, sell = compute(ltf, htf, tf_seconds(htf_tf))
-    i = len(ltf) - 1
-    if not (buy[i] or sell[i]):
-        return
-    bar_time = str(ltf["time"].iloc[i])
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    if state.get("last") == bar_time:
-        return  # already alerted for this bar
 
-    price = float(ltf["close"].iloc[i])
-    if buy[i]:
-        side, tp, sl = "BUY", price * (1 + TP_PCT / 100), price * (1 - SL_PCT / 100)
-    else:
-        side, tp, sl = "SELL", price * (1 - TP_PCT / 100), price * (1 + SL_PCT / 100)
-    telegram(f"FOUR LINE SYSTEM {side}\n{symbol} ({tf})\n"
-             f"Entry ~ {price:.5g}\nTP {tp:.5g} (+{TP_PCT}%)\nSL {sl:.5g} (-{SL_PCT}%)\n"
-             f"Bar closed: {bar_time}")
-    state_file.write_text(json.dumps({"last": bar_time}))
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    sent = set(state.get("sent", []))
+    if state.get("last"):  # older state format
+        sent.add(state["last"])
+
+    tf_sec = tf_seconds(tf)
+    now = pd.Timestamp.now(tz="UTC")
+    n = len(ltf)
+    price_now = float(ltf["close"].iloc[-1])
+
+    for i in range(max(0, n - LOOKBACK), n):  # oldest first
+        if not (buy[i] or sell[i]):
+            continue
+        bar_open = ltf["time"].iloc[i]
+        key = str(bar_open)
+        if key in sent:
+            continue  # already alerted for this bar
+
+        price = float(ltf["close"].iloc[i])
+        if buy[i]:
+            side, tp, sl = "BUY", price * (1 + TP_PCT / 100), price * (1 - SL_PCT / 100)
+        else:
+            side, tp, sl = "SELL", price * (1 - TP_PCT / 100), price * (1 + SL_PCT / 100)
+        bar_close = bar_open + pd.Timedelta(seconds=tf_sec)
+        age_min = max(0.0, (now - bar_close).total_seconds() / 60)
+        moved = (price_now / price - 1) * 100
+
+        telegram(f"FOUR LINE SYSTEM {side}\n{symbol} ({tf})\n"
+                 f"Signal candle closed {age_min:.0f} min ago ({bar_close:%H:%M} UTC)\n"
+                 f"Entry ~ {price:.5g}\n"
+                 f"Price now ~ {price_now:.5g} ({moved:+.2f}% since entry)\n"
+                 f"TP {tp:.5g} (+{TP_PCT}%)\nSL {sl:.5g} (-{SL_PCT}%)")
+        sent.add(key)
+        state_file.write_text(json.dumps({"sent": sorted(sent)[-20:]}))
 
 
 def main() -> None:
