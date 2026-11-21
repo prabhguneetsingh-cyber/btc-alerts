@@ -21,7 +21,7 @@ USE_ADX = True
 TP_PCT = 1.0
 SL_PCT = 1.0
 COOLDOWN = 4
-LOOKBACK = 3  # on every run, also check this many most recent closed candles (catches late runs)
+LOOKBACK = 6  # on every run, also check this many most recent closed candles (catches late runs)
 BARS = 1000  # history to load; the adaptive lines need a few hundred bars to settle
 
 UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -200,36 +200,95 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
     sent = set(state.get("sent", []))
     if state.get("last"):  # older state format
         sent.add(state["last"])
+    trade = state.get("trade")  # the currently open trade, if any
+
+    def save() -> None:
+        state_file.write_text(json.dumps({"sent": sorted(sent)[-20:], "trade": trade}))
 
     tf_sec = tf_seconds(tf)
     now = pd.Timestamp.now(tz="UTC")
     n = len(ltf)
     price_now = float(ltf["close"].iloc[-1])
+    keys = [str(t) for t in ltf["time"]]
+    hi = ltf["high"].to_numpy(float)
+    lo = ltf["low"].to_numpy(float)
+    cl = ltf["close"].to_numpy(float)
 
-    for i in range(max(0, n - LOOKBACK), n):  # oldest first
-        if not (buy[i] or sell[i]):
-            continue
-        bar_open = ltf["time"].iloc[i]
-        key = str(bar_open)
-        if key in sent:
-            continue  # already alerted for this bar
-
-        price = float(ltf["close"].iloc[i])
-        if buy[i]:
-            side, tp, sl = "BUY", price * (1 + TP_PCT / 100), price * (1 - SL_PCT / 100)
+    start = max(0, n - LOOKBACK)
+    trade_idx = -1
+    if trade:
+        if trade["bar"] in keys:
+            trade_idx = keys.index(trade["bar"])
+            start = min(start, trade_idx + 1)
         else:
-            side, tp, sl = "SELL", price * (1 - TP_PCT / 100), price * (1 + SL_PCT / 100)
+            print("open trade dropped: its entry candle is no longer in the loaded data")
+            trade = None
+            save()
+
+    for i in range(start, n):  # oldest first
+        bar_open = ltf["time"].iloc[i]
         bar_close = bar_open + pd.Timedelta(seconds=tf_sec)
         age_min = max(0.0, (now - bar_close).total_seconds() / 60)
+        when = f"candle closed {age_min:.0f} min ago ({bar_close:%H:%M} UTC)"
+
+        # 1) did the open trade reach its take profit or stop loss on this candle?
+        if trade is not None and i > trade_idx:
+            is_long = trade["side"] == "BUY"
+            hit_tp = hi[i] >= trade["tp"] if is_long else lo[i] <= trade["tp"]
+            hit_sl = lo[i] <= trade["sl"] if is_long else hi[i] >= trade["sl"]
+            if hit_tp or hit_sl:
+                if hit_tp and hit_sl:
+                    head, result = "TP AND SL BOTH TOUCHED IN ONE CANDLE (order unknown, check your chart)", ""
+                elif hit_tp:
+                    head, result = "TAKE PROFIT HIT", f"\nResult: +{TP_PCT}%"
+                else:
+                    head, result = "STOP LOSS HIT", f"\nResult: -{SL_PCT}%"
+                telegram(f"{head} ({trade['side']})\n{symbol} ({tf})\n"
+                         f"Entry {trade['entry']:.5g} | TP {trade['tp']:.5g} | SL {trade['sl']:.5g}\n"
+                         f"Hit on the {when}{result}")
+                trade = None
+                save()
+
+        # 2) new signal on this candle?
+        side = "BUY" if buy[i] else ("SELL" if sell[i] else None)
+        if side is None:
+            continue
+
+        # the strategy reverses on an opposite signal: close the open trade at this candle's close
+        if trade is not None and i > trade_idx and trade["side"] != side:
+            pnl = (cl[i] / trade["entry"] - 1) * 100
+            if trade["side"] == "SELL":
+                pnl = -pnl
+            telegram(f"OPPOSITE SIGNAL - strategy closes the {trade['side']} ({symbol} {tf})\n"
+                     f"Entry {trade['entry']:.5g}, closed at {cl[i]:.5g}\n"
+                     f"Result: {pnl:+.2f}%\n{when[0].upper() + when[1:]}")
+            trade = None
+            save()
+
+        key = str(bar_open)
+        if key in sent or i < n - LOOKBACK:
+            continue  # already alerted, or too old to alert
+
+        price = cl[i]
+        if side == "BUY":
+            tp, sl = price * (1 + TP_PCT / 100), price * (1 - SL_PCT / 100)
+        else:
+            tp, sl = price * (1 - TP_PCT / 100), price * (1 + SL_PCT / 100)
         moved = (price_now / price - 1) * 100
+        note = ""
+        if trade is not None:
+            note = f"\nNote: a {trade['side']} from earlier is still open (the strategy ignores repeat signals)"
 
         telegram(f"FOUR LINE SYSTEM {side}\n{symbol} ({tf})\n"
-                 f"Signal candle closed {age_min:.0f} min ago ({bar_close:%H:%M} UTC)\n"
+                 f"Signal {when}\n"
                  f"Entry ~ {price:.5g}\n"
                  f"Price now ~ {price_now:.5g} ({moved:+.2f}% since entry)\n"
-                 f"TP {tp:.5g} (+{TP_PCT}%)\nSL {sl:.5g} (-{SL_PCT}%)")
+                 f"TP {tp:.5g} (+{TP_PCT}%)\nSL {sl:.5g} (-{SL_PCT}%){note}")
         sent.add(key)
-        state_file.write_text(json.dumps({"sent": sorted(sent)[-20:]}))
+        if trade is None:
+            trade = {"side": side, "entry": price, "tp": tp, "sl": sl, "bar": key}
+            trade_idx = i
+        save()
 
 
 def main() -> None:
