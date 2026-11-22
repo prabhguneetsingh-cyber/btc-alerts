@@ -26,13 +26,25 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Check for signals
+      - name: Check BTC
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol BTC/USD --tf 5m,15m --htf 15m
 
+      # Gold only runs when your cron-job.org timer (or you) starts the workflow, not on
+      # GitHub's own schedule, so it stays inside Twelve Data's free daily limit.
+      - name: Check gold
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: python four_lines_alerts.py --once --source twelvedata --symbol XAU/USD --tf 5m,15m --htf 15m --lens 12,18,20,26 --adx-len 14 --min-adx 22 --tp 1 --sl 1 --cooldown 4
+
       - name: Save alert state
+        if: always()
         run: |
           git config user.name "alerts-bot"
           git config user.email "alerts-bot@users.noreply.github.com"
