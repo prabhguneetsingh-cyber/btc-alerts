@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 """
 FOUR ADAPTIVE LINES PRO -> Telegram alerts (free alternative to TradingView alerts)
+
+Port of the Pine v6 strategy:
+  BUY  = close crosses above Line 2 + bull stack + all slopes up + +DI > -DI
+         + ADX >= 22 + higher-timeframe (last CLOSED HTF bar) above its Line 4
+  SELL = mirror image
+  Signals are evaluated on closed bars only, with the same 4-bar cooldown.
+
+Setup
+  pip install pandas numpy requests ccxt yfinance
+  export TELEGRAM_BOT_TOKEN="123456:ABC..."   # from @BotFather
+  export TELEGRAM_CHAT_ID="123456789"         # your chat id
+
+Examples
+  python four_lines_alerts.py --ping
+  python four_lines_alerts.py --source ccxt --exchange binance --symbol BTC/USDT --tf 5m,15m --htf 15m
+  python four_lines_alerts.py --source yf --symbol RELIANCE.NS --tf 5m,15m --htf 15m
+  python four_lines_alerts.py --source yf --symbol EURUSD=X --tf 5m,15m --htf 15m --once
 """
 import argparse
 import json
@@ -25,6 +42,11 @@ LOOKBACK = 6  # on every run, also check this many most recent closed candles (c
 BARS = 1000  # history to load; the adaptive lines need a few hundred bars to settle
 
 UNITS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def px(x: float) -> str:
+    """Price text: 2 decimals for big prices (BTC, gold), 5 significant digits for small ones."""
+    return f"{x:.2f}" if x >= 100 else f"{x:.5g}"
 
 
 def tf_seconds(tf: str) -> int:
@@ -154,9 +176,43 @@ def fetch_yf(symbol: str, tf: str) -> pd.DataFrame:
     return df[["time", "open", "high", "low", "close"]].dropna().tail(BARS)
 
 
+def fetch_twelvedata(symbol: str, tf: str) -> pd.DataFrame:
+    key = os.environ.get("TWELVEDATA_API_KEY")
+    if not key:
+        raise RuntimeError("TWELVEDATA_API_KEY is not set")
+    interval = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
+                "1h": "1h", "4h": "4h", "1d": "1day"}[tf]
+    try:
+        r = requests.get("https://api.twelvedata.com/time_series",
+                         params={"symbol": symbol, "interval": interval, "outputsize": BARS,
+                                 "timezone": "UTC", "apikey": key}, timeout=20)
+        data = r.json()
+    except (requests.RequestException, ValueError) as e:
+        # never include the request URL in the message (it contains the API key)
+        raise RuntimeError(f"Twelve Data request failed ({type(e).__name__})") from None
+    if data.get("status") == "error" or "values" not in data:
+        raise RuntimeError(f"Twelve Data: {data.get('message', 'no data returned')}")
+    df = pd.DataFrame(data["values"])
+    df["time"] = pd.to_datetime(df["datetime"], utc=True)  # start time of each candle
+    for col in ("open", "high", "low", "close"):
+        df[col] = df[col].astype(float)
+    return df[["time", "open", "high", "low", "close"]].sort_values("time").reset_index(drop=True)
+
+
+_CACHE = {}  # one download per symbol/timeframe per run (saves free-plan requests)
+
+
 def fetch(args, symbol: str, tf: str) -> pd.DataFrame:
-    df = fetch_ccxt(args.exchange, symbol, tf) if args.source == "ccxt" else fetch_yf(symbol, tf)
-    return closed_only(df, tf)
+    k = (args.source, args.exchange, symbol, tf)
+    if k not in _CACHE:
+        if args.source == "ccxt":
+            df = fetch_ccxt(args.exchange, symbol, tf)
+        elif args.source == "twelvedata":
+            df = fetch_twelvedata(symbol, tf)
+        else:
+            df = fetch_yf(symbol, tf)
+        _CACHE[k] = closed_only(df, tf)
+    return _CACHE[k]
 
 
 # ---------------- notifications ----------------
@@ -244,7 +300,7 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
                 else:
                     head, result = "STOP LOSS HIT", f"\nResult: -{SL_PCT}%"
                 telegram(f"{head} ({trade['side']})\n{symbol} ({tf})\n"
-                         f"Entry {trade['entry']:.5g} | TP {trade['tp']:.5g} | SL {trade['sl']:.5g}\n"
+                         f"Entry {px(trade['entry'])} | TP {px(trade['tp'])} | SL {px(trade['sl'])}\n"
                          f"Hit on the {when}{result}")
                 trade = None
                 save()
@@ -260,7 +316,7 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
             if trade["side"] == "SELL":
                 pnl = -pnl
             telegram(f"OPPOSITE SIGNAL - strategy closes the {trade['side']} ({symbol} {tf})\n"
-                     f"Entry {trade['entry']:.5g}, closed at {cl[i]:.5g}\n"
+                     f"Entry {px(trade['entry'])}, closed at {px(cl[i])}\n"
                      f"Result: {pnl:+.2f}%\n{when[0].upper() + when[1:]}")
             trade = None
             save()
@@ -281,9 +337,9 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
 
         telegram(f"FOUR LINE SYSTEM {side}\n{symbol} ({tf})\n"
                  f"Signal {when}\n"
-                 f"Entry ~ {price:.5g}\n"
-                 f"Price now ~ {price_now:.5g} ({moved:+.2f}% since entry)\n"
-                 f"TP {tp:.5g} (+{TP_PCT}%)\nSL {sl:.5g} (-{SL_PCT}%){note}")
+                 f"Entry ~ {px(price)}\n"
+                 f"Price now ~ {px(price_now)} ({moved:+.2f}% since entry)\n"
+                 f"TP {px(tp)} (+{TP_PCT}%)\nSL {px(sl)} (-{SL_PCT}%){note}")
         sent.add(key)
         if trade is None:
             trade = {"side": side, "entry": price, "tp": tp, "sl": sl, "bar": key}
@@ -292,16 +348,31 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
 
 
 def main() -> None:
+    global LEN1, LEN2, LEN3, LEN4, ADX_LEN, MIN_ADX, TP_PCT, SL_PCT, COOLDOWN, LOOKBACK, USE_HTF, USE_ADX
     p = argparse.ArgumentParser()
-    p.add_argument("--source", choices=["ccxt", "yf"], default="ccxt")
+    p.add_argument("--source", choices=["ccxt", "twelvedata", "yf"], default="ccxt")
     p.add_argument("--exchange", default="binance", help="ccxt exchange id")
     p.add_argument("--symbol", default="BTC/USDT", help="one or more, comma separated")
     p.add_argument("--tf", default="5m,15m", help="chart timeframes, comma separated: 1m 5m 15m 30m 1h 1d")
     p.add_argument("--htf", default="15m", help="higher timeframe filter (yours is set to 15 min)")
+    # per-asset indicator settings (defaults = your BTC settings)
+    p.add_argument("--lens", default="5,11,14,33", help="Line 1-4 lengths, e.g. 5,11,14,33")
+    p.add_argument("--adx-len", type=int, default=20)
+    p.add_argument("--min-adx", type=float, default=22.0)
+    p.add_argument("--tp", type=float, default=1.0, help="take profit %%")
+    p.add_argument("--sl", type=float, default=1.0, help="stop loss %%")
+    p.add_argument("--cooldown", type=int, default=4)
+    p.add_argument("--lookback", type=int, default=6, help="closed candles re-checked on every run")
+    p.add_argument("--no-htf", action="store_true", help="turn the higher timeframe filter off")
+    p.add_argument("--no-adx", action="store_true", help="turn the ADX filter off")
     p.add_argument("--poll", type=int, default=60, help="seconds between checks")
     p.add_argument("--once", action="store_true", help="check once and exit (for cron)")
     p.add_argument("--ping", action="store_true", help="send a test Telegram message and exit")
     args = p.parse_args()
+    LEN1, LEN2, LEN3, LEN4 = [int(x) for x in args.lens.split(",")]
+    ADX_LEN, MIN_ADX, TP_PCT, SL_PCT = args.adx_len, args.min_adx, args.tp, args.sl
+    COOLDOWN, LOOKBACK = args.cooldown, args.lookback
+    USE_HTF, USE_ADX = not args.no_htf, not args.no_adx
 
     if args.ping:
         telegram("Four Line alerts: test message OK")
@@ -311,6 +382,7 @@ def main() -> None:
     tfs = [x.strip() for x in args.tf.split(",")]
     print(f"Watching {symbols} on {tfs} (HTF {args.htf}) via {args.source}. Ctrl+C to stop.")
     while True:
+        _CACHE.clear()
         for symbol in symbols:
             for tf in tfs:
                 try:
