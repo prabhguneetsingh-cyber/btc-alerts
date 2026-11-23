@@ -39,6 +39,8 @@ TP_PCT = 1.0
 SL_PCT = 1.0
 COOLDOWN = 4
 LOOKBACK = 6  # on every run, also check this many most recent closed candles (catches late runs)
+DRY_RUN = False  # --dry-run: print what would be sent, send nothing, save nothing
+DEBUG_ROWS = 12
 BARS = 1000  # history to load; the adaptive lines need a few hundred bars to settle
 
 UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -217,13 +219,28 @@ def fetch(args, symbol: str, tf: str) -> pd.DataFrame:
 
 # ---------------- notifications ----------------
 def telegram(text: str) -> None:
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat:
+    """Send to every chat id in TELEGRAM_CHAT_ID (comma separated). Only fails if NO chat received it."""
+    if DRY_RUN:
+        print("[dry run] would send:\n" + text.replace("\n", "\n    "))
+        return
+    token, chats = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID", "")
+    chat_ids = [c.strip() for c in chats.split(",") if c.strip()]
+    if not token or not chat_ids:
         print("[Telegram not configured]\n" + text)
         return
-    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      data={"chat_id": chat, "text": text}, timeout=15)
-    r.raise_for_status()
+    delivered = 0
+    for chat in chat_ids:
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                              data={"chat_id": chat, "text": text}, timeout=15)
+            if r.ok:
+                delivered += 1
+            else:
+                print(f"Telegram: could not send to the chat ending ...{chat[-3:]} (HTTP {r.status_code})")
+        except requests.RequestException as e:  # never print the URL (it contains the bot token)
+            print(f"Telegram: could not send to the chat ending ...{chat[-3:]} ({type(e).__name__})")
+    if delivered == 0:
+        raise RuntimeError("Telegram: the message could not be delivered to any chat")
 
 
 # ---------------- main loop ----------------
@@ -250,15 +267,17 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
     ltf, htf = fetch(args, symbol, tf), fetch(args, symbol, htf_tf)
     dbg = {}
     buy, sell = compute(ltf, htf, tf_seconds(htf_tf), dbg)
-    print_debug(symbol, tf, ltf, dbg, buy, sell)
+    print_debug(symbol, tf, ltf, dbg, buy, sell, DEBUG_ROWS)
 
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    state = {} if DRY_RUN or not state_file.exists() else json.loads(state_file.read_text())
     sent = set(state.get("sent", []))
     if state.get("last"):  # older state format
         sent.add(state["last"])
     trade = state.get("trade")  # the currently open trade, if any
 
     def save() -> None:
+        if DRY_RUN:
+            return
         state_file.write_text(json.dumps({"sent": sorted(sent)[-20:], "trade": trade}))
 
     tf_sec = tf_seconds(tf)
@@ -348,7 +367,7 @@ def check(args, symbol: str, tf: str, htf_tf: str) -> None:
 
 
 def main() -> None:
-    global LEN1, LEN2, LEN3, LEN4, ADX_LEN, MIN_ADX, TP_PCT, SL_PCT, COOLDOWN, LOOKBACK, USE_HTF, USE_ADX
+    global LEN1, LEN2, LEN3, LEN4, ADX_LEN, MIN_ADX, TP_PCT, SL_PCT, COOLDOWN, LOOKBACK, USE_HTF, USE_ADX, DRY_RUN, DEBUG_ROWS
     p = argparse.ArgumentParser()
     p.add_argument("--source", choices=["ccxt", "twelvedata", "yf"], default="ccxt")
     p.add_argument("--exchange", default="binance", help="ccxt exchange id")
@@ -365,6 +384,8 @@ def main() -> None:
     p.add_argument("--lookback", type=int, default=6, help="closed candles re-checked on every run")
     p.add_argument("--no-htf", action="store_true", help="turn the higher timeframe filter off")
     p.add_argument("--no-adx", action="store_true", help="turn the ADX filter off")
+    p.add_argument("--dry-run", action="store_true", help="print alerts instead of sending; save nothing")
+    p.add_argument("--debug-rows", type=int, default=12, help="candles shown in the log table")
     p.add_argument("--poll", type=int, default=60, help="seconds between checks")
     p.add_argument("--once", action="store_true", help="check once and exit (for cron)")
     p.add_argument("--ping", action="store_true", help="send a test Telegram message and exit")
@@ -373,6 +394,7 @@ def main() -> None:
     ADX_LEN, MIN_ADX, TP_PCT, SL_PCT = args.adx_len, args.min_adx, args.tp, args.sl
     COOLDOWN, LOOKBACK = args.cooldown, args.lookback
     USE_HTF, USE_ADX = not args.no_htf, not args.no_adx
+    DRY_RUN, DEBUG_ROWS = args.dry_run, args.debug_rows
 
     if args.ping:
         telegram("Four Line alerts: test message OK")
