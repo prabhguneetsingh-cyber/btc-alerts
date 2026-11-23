@@ -1,0 +1,32 @@
+name: compare-gold-sources
+
+# Manual only: click "Run workflow". Sends nothing to Telegram and saves nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pandas numpy requests ccxt yfinance
+
+      - name: A - Twelve Data (XAU/USD)
+        continue-on-error: true
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: python four_lines_alerts.py --dry-run --once --debug-rows 30 --source twelvedata --symbol XAU/USD --tf 5m,15m --htf 15m --lens 12,18,20,26 --adx-len 14 --min-adx 22 --tp 1 --sl 1 --cooldown 4
+
+      - name: B - Yahoo Finance (XAUUSD=X)
+        continue-on-error: true
+        run: python four_lines_alerts.py --dry-run --once --debug-rows 30 --source yf --symbol XAUUSD=X --tf 5m,15m --htf 15m --lens 12,18,20,26 --adx-len 14 --min-adx 22 --tp 1 --sl 1 --cooldown 4
+
+      - name: C - Kraken gold token (PAXG/USD)
+        continue-on-error: true
+        run: python four_lines_alerts.py --dry-run --once --debug-rows 30 --source ccxt --exchange kraken --symbol PAXG/USD --tf 5m,15m --htf 15m --lens 12,18,20,26 --adx-len 14 --min-adx 22 --tp 1 --sl 1 --cooldown 4
