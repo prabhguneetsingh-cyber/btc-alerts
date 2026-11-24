@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+np.seterr(divide="ignore", invalid="ignore")
 
 # ---------------- settings (same as the Pine inputs) ----------------
 LEN1, LEN2, LEN3, LEN4 = 5, 11, 14, 33
