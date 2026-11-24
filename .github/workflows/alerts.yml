@@ -32,13 +32,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol BTC/USD --tf 5m,15m --htf 15m
 
-      - name: Check gold (Kraken PAXG/USD)
-        continue-on-error: true
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol PAXG/USD --tf 5m,15m --htf 15m --lens 4,7,10,18 --adx-len 1 --min-adx 25 --tp 1.9 --sl 1 --cooldown 4
-
       - name: Save alert state
         if: always()
         run: |
