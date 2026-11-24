@@ -32,6 +32,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol BTC/USD --tf 5m,15m --htf 15m
 
+      - name: Check SOL (Kraken SOL/USD)
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python four_lines_alerts.py --once --source ccxt --exchange kraken --symbol SOL/USD --tf 5m --htf 15m --lens 1,4,8,15 --adx-len 1 --min-adx 25 --tp 3.6 --sl 1 --cooldown 4
+
       - name: Save alert state
         if: always()
         run: |
