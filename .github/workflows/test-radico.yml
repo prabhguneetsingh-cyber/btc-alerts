@@ -1,0 +1,24 @@
+name: test-radico-data
+
+# Manual only: click "Run workflow". Sends nothing to Telegram and saves nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pandas numpy requests ccxt yfinance
+
+      - name: Yahoo Finance (RADICO.NS)
+        run: python four_lines_alerts.py --dry-run --once --debug-rows 20 --source yf --symbol RADICO.NS --tf 5m --htf 15m
+
+      - name: Time now (UTC) for comparison
+        run: date -u
