@@ -4,9 +4,12 @@ FOUR ADAPTIVE LINES PRO -> Telegram alerts (free alternative to TradingView aler
 
 Port of the Pine v6 strategy:
   BUY  = close crosses above Line 2 + bull stack + all slopes up + +DI > -DI
-         + ADX >= 22 + higher-timeframe (last CLOSED HTF bar) above its Line 4
+         + ADX >= MIN_ADX + higher-timeframe (last CLOSED HTF bar) above its Line 4
   SELL = mirror image
   Signals are evaluated on closed bars only, with the same 4-bar cooldown.
+
+Current settings (from TradingView): lines 5/9/31/39, HTF 5m, ADX 22 / min 21,
+TP 2%, SL 1%, cooldown 4. Runs on the 5m chart only. Default data: Kraken BTC/USD.
 
 Setup
   pip install pandas numpy requests ccxt yfinance
@@ -15,9 +18,8 @@ Setup
 
 Examples
   python four_lines_alerts.py --ping
-  python four_lines_alerts.py --source ccxt --exchange binance --symbol BTC/USDT --tf 5m --htf 5m
-  python four_lines_alerts.py --source yf --symbol RELIANCE.NS --tf 5m --htf 5m
-  python four_lines_alerts.py --source yf --symbol EURUSD=X --tf 5m --htf 5m --once
+  python four_lines_alerts.py --once
+  python four_lines_alerts.py --once --dry-run
 """
 import argparse
 import json
@@ -371,15 +373,15 @@ def main() -> None:
     global LEN1, LEN2, LEN3, LEN4, ADX_LEN, MIN_ADX, TP_PCT, SL_PCT, COOLDOWN, LOOKBACK, USE_HTF, USE_ADX, DRY_RUN, DEBUG_ROWS
     p = argparse.ArgumentParser()
     p.add_argument("--source", choices=["ccxt", "twelvedata", "yf"], default="ccxt")
-    p.add_argument("--exchange", default="binance", help="ccxt exchange id")
-    p.add_argument("--symbol", default="BTC/USDT", help="one or more, comma separated")
-    p.add_argument("--tf", default="5m", help="locked to 5m; use only the 5-minute timeframe")
-    p.add_argument("--htf", default="5m", help="higher timeframe filter; set to 5m to match your chart settings")
-    # per-asset indicator settings (defaults = your BTC settings)
-    p.add_argument("--lens", default="5,11,14,33", help="Line 1-4 lengths, e.g. 5,11,14,33")
-    p.add_argument("--adx-len", type=int, default=20)
-    p.add_argument("--min-adx", type=float, default=22.0)
-    p.add_argument("--tp", type=float, default=1.0, help="take profit %%")
+    p.add_argument("--exchange", default="kraken", help="ccxt exchange id")
+    p.add_argument("--symbol", default="BTC/USD", help="one or more, comma separated")
+    p.add_argument("--tf", default="5m", help="ignored: this script runs on the 5m chart only")
+    p.add_argument("--htf", default="5m", help="higher timeframe filter (yours is set to 5 min)")
+    # per-asset indicator settings (defaults = your current TradingView settings)
+    p.add_argument("--lens", default="5,9,31,39", help="Line 1-4 lengths, e.g. 5,9,31,39")
+    p.add_argument("--adx-len", type=int, default=22)
+    p.add_argument("--min-adx", type=float, default=21.0)
+    p.add_argument("--tp", type=float, default=2.0, help="take profit %%")
     p.add_argument("--sl", type=float, default=1.0, help="stop loss %%")
     p.add_argument("--cooldown", type=int, default=4)
     p.add_argument("--lookback", type=int, default=6, help="closed candles re-checked on every run")
@@ -402,12 +404,7 @@ def main() -> None:
         return
 
     symbols = [x.strip() for x in args.symbol.split(",")]
-    # Always monitor the 5-minute chart, even if an older GitHub Actions
-    # workflow still passes --tf 5m,15m (or another timeframe).
-    requested_tfs = [x.strip() for x in args.tf.split(",")]
-    if requested_tfs != ["5m"]:
-        print(f"Ignoring requested timeframe(s) {requested_tfs}; this script monitors 5m only.")
-    tfs = ["5m"]
+    tfs = ["5m"]  # locked to the 5 minute chart
     print(f"Watching {symbols} on {tfs} (HTF {args.htf}) via {args.source}. Ctrl+C to stop.")
     while True:
         _CACHE.clear()
