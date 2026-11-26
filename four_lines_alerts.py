@@ -15,9 +15,9 @@ Setup
 
 Examples
   python four_lines_alerts.py --ping
-  python four_lines_alerts.py --source ccxt --exchange binance --symbol BTC/USDT --tf 5m,15m --htf 5m
+  python four_lines_alerts.py --source ccxt --exchange binance --symbol BTC/USDT --tf 5m --htf 5m
   python four_lines_alerts.py --source yf --symbol RELIANCE.NS --tf 5m --htf 5m
-  python four_lines_alerts.py --source yf --symbol EURUSD=X --tf 5m,15m --htf 5m --once
+  python four_lines_alerts.py --source yf --symbol EURUSD=X --tf 5m --htf 5m --once
 """
 import argparse
 import json
@@ -373,7 +373,7 @@ def main() -> None:
     p.add_argument("--source", choices=["ccxt", "twelvedata", "yf"], default="ccxt")
     p.add_argument("--exchange", default="binance", help="ccxt exchange id")
     p.add_argument("--symbol", default="BTC/USDT", help="one or more, comma separated")
-    p.add_argument("--tf", default="5m,15m", help="chart timeframes, comma separated: 1m 5m 15m 30m 1h 1d")
+    p.add_argument("--tf", default="5m", help="locked to 5m; use only the 5-minute timeframe")
     p.add_argument("--htf", default="15m", help="higher timeframe filter (yours is set to 15 min)")
     # per-asset indicator settings (defaults = your BTC settings)
     p.add_argument("--lens", default="5,11,14,33", help="Line 1-4 lengths, e.g. 5,11,14,33")
@@ -403,6 +403,8 @@ def main() -> None:
 
     symbols = [x.strip() for x in args.symbol.split(",")]
     tfs = [x.strip() for x in args.tf.split(",")]
+    if tfs != ["5m"]:
+        p.error("This alert script is locked to --tf 5m. Set the GitHub Actions command to --tf 5m only.")
     print(f"Watching {symbols} on {tfs} (HTF {args.htf}) via {args.source}. Ctrl+C to stop.")
     while True:
         _CACHE.clear()
